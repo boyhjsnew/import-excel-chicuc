@@ -26,9 +26,12 @@ export default function RootLayout({
   return (
     <html lang="vi">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} flex min-h-screen flex-col antialiased`}
       >
-        {children}
+        <main className="flex flex-1 flex-col">{children}</main>
+        <footer className="shrink-0 border-t border-gray-200 bg-white px-4 py-3 text-center text-xs text-gray-500">
+          Copyright © {new Date().getFullYear()}. M-invoice HCM
+        </footer>
       </body>
     </html>
   );

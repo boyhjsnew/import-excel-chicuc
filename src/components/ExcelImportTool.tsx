@@ -108,7 +108,7 @@ export default function ExcelImportTool() {
   const canImport = hasRows && !hasTaxCodeErrors;
 
   return (
-    <div className="min-h-screen w-full overflow-x-hidden bg-gray-50 px-3 py-4 sm:px-4">
+    <div className="w-full overflow-x-hidden bg-gray-50 px-3 py-4 sm:px-4">
       <div className="mx-auto w-full min-w-0 max-w-3xl">
         <header className="mb-3">
           <h1 className="text-base font-bold text-gray-900 sm:text-lg">
