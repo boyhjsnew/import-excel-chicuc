@@ -177,11 +177,7 @@ export async function lookupBuyer(
 }
 
 export function formatLookupError(result: LookupBuyerCallResult): string {
-  const { data } = result;
-  const traceInfo = data.traces?.length
-    ? `\n${data.traces.map((t) => `• ${t.method} ${t.api} → ${t.status} (${t.durationMs}ms)\n  ${t.url}\n  ${t.responsePreview || t.error || ""}`).join("\n")}`
-    : "";
-  return (data.error || "Tra cứu thất bại") + traceInfo;
+  return result.data.error || "Tra cứu thất bại";
 }
 
 export async function importBienLaiRows(

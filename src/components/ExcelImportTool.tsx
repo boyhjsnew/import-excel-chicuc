@@ -12,7 +12,7 @@ import {
 } from "@/lib/minvoice";
 import { formatExcelRowLabel, normalizeMaSoThue } from "@/lib/tax-code";
 import type { ParsedInvoiceFile } from "@/types/invoice";
-import LookupDebugPanel, { type LookupLogEntry } from "./LookupDebugPanel";
+import ImportResultList from "./ImportResultList";
 import InvoicePreviewTable from "./InvoicePreviewTable";
 
 export default function ExcelImportTool() {
@@ -23,7 +23,6 @@ export default function ExcelImportTool() {
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
-  const [lookupLogs, setLookupLogs] = useState<LookupLogEntry[]>([]);
   const [parsedFile, setParsedFile] = useState<ParsedInvoiceFile | null>(null);
 
   const handleFile = useCallback(async (file: File) => {
@@ -64,26 +63,16 @@ export default function ExcelImportTool() {
     setError(null);
     setImportResult(null);
     setImportStatus(null);
-    setLookupLogs([]);
   };
 
   const runLookup = async (rows: ParsedInvoiceFile["rows"]) => {
     const buyers: Record<string, BuyerInfo> = {};
-    const logs: LookupLogEntry[] = [];
     const uniqueMst = getUniqueMaSoThue(rows);
 
     for (const mst of uniqueMst) {
       setImportStatus(`Đang tra cứu MST ${mst}...`);
       const sampleRow = rows.find((row) => normalizeMaSoThue(row.maSoThue) === mst)!;
       const result = await lookupBuyer(mst, sampleRow);
-
-      logs.push({
-        time: new Date().toLocaleTimeString("vi-VN"),
-        endpoint: result.endpoint,
-        httpStatus: result.httpStatus,
-        response: result.data,
-      });
-      setLookupLogs([...logs]);
 
       if (!result.data.ok || !result.data.buyer) {
         throw new Error(formatLookupError(result));
@@ -95,30 +84,12 @@ export default function ExcelImportTool() {
     return buyers;
   };
 
-  const handleTestLookup = async () => {
-    if (!parsedFile?.rows.length || parsedFile.taxCodeErrors.length > 0) return;
-
-    setIsImporting(true);
-    setError(null);
-    setLookupLogs([]);
-
-    try {
-      await runLookup(parsedFile.rows);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Tra cứu thất bại");
-    } finally {
-      setIsImporting(false);
-      setImportStatus(null);
-    }
-  };
-
   const handleImport = async () => {
     if (!parsedFile?.rows.length || parsedFile.taxCodeErrors.length > 0) return;
 
     setIsImporting(true);
     setError(null);
     setImportResult(null);
-    setLookupLogs([]);
 
     try {
       const buyers = await runLookup(parsedFile.rows);
@@ -169,16 +140,6 @@ export default function ExcelImportTool() {
             >
               Chọn file
             </button>
-            {hasRows && (
-              <button
-                type="button"
-                onClick={() => void handleTestLookup()}
-                disabled={isImporting || !canImport}
-                className="rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 sm:text-sm"
-              >
-                Tra cứu thử
-              </button>
-            )}
             {hasRows && (
               <button
                 type="button"
@@ -241,9 +202,9 @@ export default function ExcelImportTool() {
           </div>
 
           {error && (
-            <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded-md bg-red-50 px-2 py-1.5 text-xs text-red-600">
+            <p className="mt-2 rounded-md bg-red-50 px-2 py-1.5 text-xs text-red-600">
               {error}
-            </pre>
+            </p>
           )}
 
           {importStatus && (
@@ -251,8 +212,6 @@ export default function ExcelImportTool() {
               {importStatus}
             </p>
           )}
-
-          <LookupDebugPanel logs={lookupLogs} />
 
           {hasTaxCodeErrors && parsedFile && (
             <div className="mt-2 rounded-md bg-red-50 px-2 py-1.5 text-xs text-red-700">
@@ -269,28 +228,7 @@ export default function ExcelImportTool() {
             </div>
           )}
 
-          {importResult && importResult.failed === 0 && (
-            <p className="mt-2 rounded-md bg-emerald-50 px-2 py-1.5 text-xs text-emerald-700">
-              Import thành công {importResult.success}/{importResult.total} biên lai.
-            </p>
-          )}
-
-          {importResult && importResult.failed > 0 && (
-            <div className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
-              <p className="font-medium">
-                {importResult.success}/{importResult.total} thành công
-              </p>
-              <ul className="mt-1 space-y-0.5">
-                {importResult.results
-                  .filter((r) => !r.success)
-                  .map((r) => (
-                    <li key={`${r.excelRowNumber}-${r.stt}`}>
-                      {r.message}
-                    </li>
-                  ))}
-              </ul>
-            </div>
-          )}
+          {importResult && <ImportResultList result={importResult} />}
         </div>
 
         {hasRows && (
