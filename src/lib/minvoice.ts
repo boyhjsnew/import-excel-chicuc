@@ -1,7 +1,14 @@
 import type { ApiTrace } from "@/lib/api-trace";
 import type { BuyerInfo } from "@/lib/customer";
+import {
+  formatNgayNhapApi,
+  parseNgayNhap,
+  sortRowsByNgayNhap,
+} from "@/lib/date";
 import { normalizeMaSoThue } from "@/lib/tax-code";
 import type { InvoiceRow } from "@/types/invoice";
+
+export { parseNgayNhap, sortRowsByNgayNhap };
 
 const MA_HANG_TEN: Record<string, string> = {
   NUOCTHAI: "Phí bảo vệ môi trường đối với nước thải công nghiệp",
@@ -34,27 +41,6 @@ export type ImportResult = {
   results: ImportRowResult[];
 };
 
-export function parseNgayNhap(value: string): Date {
-  const trimmed = value.trim();
-  const parts = trimmed.split(/[/\-.]/);
-
-  if (parts.length === 3) {
-    const day = Number(parts[0]);
-    const month = Number(parts[1]);
-    let year = Number(parts[2]);
-
-    if (year < 100) year += 2000;
-
-    const date = new Date(year, month - 1, day, 12, 0, 0);
-    if (!Number.isNaN(date.getTime())) return date;
-  }
-
-  const parsed = new Date(trimmed);
-  if (!Number.isNaN(parsed.getTime())) return parsed;
-
-  throw new Error(`Ngày nhập không hợp lệ: ${value}`);
-}
-
 export function getInvoiceSeries(date: Date): string {
   const yearSuffix = String(date.getFullYear()).slice(-2);
   return `EBL01-${yearSuffix}T`;
@@ -73,11 +59,6 @@ export function getTenHang(maHang: string): string {
   return MA_HANG_TEN[ma] ?? maHang;
 }
 
-function toDateString(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
 function generateSophieu(index: number): string {
   const now = new Date();
   const pad = (n: number, len = 2) => String(n).padStart(len, "0");
@@ -94,7 +75,7 @@ export function buildInvoicePayload(
   const ngayNhap = parseNgayNhap(row.ngayNhap);
   const soTien = parseSoTien(row.soTien);
   const maHang = row.maHang.trim().toUpperCase();
-  const ngayStr = toDateString(ngayNhap);
+  const ngayStr = formatNgayNhapApi(ngayNhap);
 
   if (!maHang) {
     throw new Error("Mã hàng không được để trống");

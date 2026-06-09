@@ -8,6 +8,7 @@ import {
   getUniqueMaSoThue,
   importBienLaiRows,
   lookupBuyer,
+  sortRowsByNgayNhap,
   type ImportResult,
 } from "@/lib/minvoice";
 import { formatExcelRowLabel, normalizeMaSoThue } from "@/lib/tax-code";
@@ -93,8 +94,9 @@ export default function ExcelImportTool() {
 
     try {
       const buyers = await runLookup(parsedFile.rows);
-      setImportStatus("Đang lưu biên lai...");
-      setImportResult(await importBienLaiRows(parsedFile.rows, buyers));
+      setImportStatus("Đang lưu biên lai (theo thứ tự ngày)...");
+      const sortedRows = sortRowsByNgayNhap(parsedFile.rows);
+      setImportResult(await importBienLaiRows(sortedRows, buyers));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import thất bại");
     } finally {

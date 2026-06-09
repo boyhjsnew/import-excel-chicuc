@@ -3,6 +3,7 @@ import type { BuyerInfo } from "@/lib/customer";
 import { assertMinvoiceConfig } from "@/lib/import-config";
 import {
   buildInvoicePayload,
+  sortRowsByNgayNhap,
   type ImportResult,
   type ImportRowResult,
 } from "@/lib/minvoice";
@@ -96,9 +97,10 @@ export async function POST(request: Request) {
 
     const config = assertMinvoiceConfig();
     const results: ImportRowResult[] = [];
+    const sortedRows = sortRowsByNgayNhap(rows);
 
-    for (let i = 0; i < rows.length; i += 1) {
-      const row = rows[i];
+    for (let i = 0; i < sortedRows.length; i += 1) {
+      const row = sortedRows[i];
       const stt = row.stt || String(i + 1);
       const excelRowNumber = row.excelRowNumber ?? i + 2;
 

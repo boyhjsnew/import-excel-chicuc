@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import { parseNgayNhapFromExcelCell } from "@/lib/date";
 import { validateRowsTaxCode } from "@/lib/tax-code";
 import {
   INVOICE_COLUMNS,
@@ -52,6 +53,9 @@ function cellToString(value: unknown): string {
     const year = value.getFullYear();
     return `${day}/${month}/${year}`;
   }
+  if (typeof value === "number") {
+    return String(value);
+  }
   return String(value).trim();
 }
 
@@ -103,7 +107,7 @@ export function parseInvoiceExcel(file: File): Promise<ParsedInvoiceFile> {
         const rawRows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
           header: 1,
           defval: "",
-          raw: false,
+          raw: true,
         });
 
         if (rawRows.length === 0) {
@@ -134,6 +138,7 @@ export function parseInvoiceExcel(file: File): Promise<ParsedInvoiceFile> {
           return;
         }
 
+        const ngayNhapCol = columnIndexMap.get("ngayNhap")!;
         const rows: InvoiceRow[] = [];
 
         for (let i = 1; i < rawRows.length; i += 1) {
@@ -146,6 +151,10 @@ export function parseInvoiceExcel(file: File): Promise<ParsedInvoiceFile> {
             },
             { excelRowNumber: i + 1 } as InvoiceRow
           );
+
+          const dateCellAddress = XLSX.utils.encode_cell({ r: i, c: ngayNhapCol });
+          const dateCell = worksheet[dateCellAddress];
+          row.ngayNhap = parseNgayNhapFromExcelCell(dateCell);
 
           if (!isRowEmpty(row)) {
             rows.push(row);
