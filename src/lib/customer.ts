@@ -40,12 +40,12 @@ type TaxApiResponse = {
   dia_chi?: string;
 };
 
-function buildCustomerFilter(maDt: string) {
+function buildCustomerFilter(maSoThue: string) {
   return [
-    { columnName: "ma_dt", columnType: "string", value: maDt },
+    { columnName: "ma_dt", columnType: "string", value: "" },
     { columnName: "ten_dt", columnType: "string", value: "" },
     { columnName: "dia_chi", columnType: "string", value: "" },
-    { columnName: "ms_thue", columnType: "string", value: "" },
+    { columnName: "ms_thue", columnType: "string", value: maSoThue },
     { columnName: "email", columnType: "string", value: "" },
     { columnName: "dien_thoai", columnType: "string", value: "" },
     { columnName: "dien_giai", columnType: "string", value: "" },
@@ -59,8 +59,8 @@ export function getAuthToken(): string {
   return assertMinvoiceConfig().authToken;
 }
 
-async function lookupCustomerByMaDt(
-  maDt: string,
+async function lookupCustomerByMsThue(
+  maSoThue: string,
   traces: ApiTrace[]
 ): Promise<CustomerRecord | null> {
   const apiUrl = process.env.MINVOICE_CUSTOMER_API_URL || DEFAULT_CUSTOMER_API;
@@ -78,7 +78,7 @@ async function lookupCustomerByMaDt(
       window_id: CUSTOMER_WINDOW_ID,
       start: 0,
       count: 50,
-      filter: buildCustomerFilter(maDt),
+      filter: buildCustomerFilter(maSoThue),
       tlbparam: [],
     }),
   });
@@ -138,7 +138,7 @@ async function lookupCustomerByMaDt(
       response,
       true,
       found
-        ? `Tìm thấy: ${body.data?.[0]?.ten_dt ?? maDt}${body.data?.[0]?.email?.trim() ? ` · email: ${body.data[0].email}` : " · email: (trống)"}`
+        ? `Tìm thấy: ${body.data?.[0]?.ten_dt ?? maSoThue}${body.data?.[0]?.email?.trim() ? ` · email: ${body.data[0].email}` : " · email: (trống)"}`
         : "Không có trong danh mục KH"
     )
   );
@@ -244,7 +244,7 @@ export async function resolveBuyerInfo(row: InvoiceRow): Promise<BuyerLookupResu
   }
 
   try {
-    const customer = await lookupCustomerByMaDt(maSoThue, traces);
+    const customer = await lookupCustomerByMsThue(maSoThue, traces);
     if (customer) {
       return {
         buyer: {
