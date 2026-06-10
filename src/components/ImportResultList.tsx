@@ -41,6 +41,22 @@ export default function ImportResultList({ result }: ImportResultListProps) {
           </li>
         ))}
       </ul>
+      {result.customerSaves && result.customerSaves.length > 0 && (
+        <div className="mt-2 border-t border-emerald-200/80 pt-2">
+          <p className="font-medium">Lưu danh mục KH (sau import):</p>
+          <ul className="mt-1 space-y-1">
+            {result.customerSaves.map((item) => (
+              <li
+                key={item.maSoThue}
+                className={item.success ? "text-emerald-700" : "text-amber-800"}
+              >
+                MST {item.maSoThue}:{" "}
+                {item.success ? "✓ Đã lưu" : `✗ ${item.message ?? "Thất bại"}`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

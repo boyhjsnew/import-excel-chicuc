@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import type { BuyerInfo } from "@/lib/customer";
+import {
+  saveCustomerToCatalog,
+  shouldSaveCustomerToCatalog,
+  type BuyerInfo,
+  type CustomerSaveResult,
+} from "@/lib/customer";
 import { assertMinvoiceConfig } from "@/lib/import-config";
 import {
   buildInvoicePayload,
@@ -97,6 +102,8 @@ export async function POST(request: Request) {
 
     const config = assertMinvoiceConfig();
     const results: ImportRowResult[] = [];
+    const customerSaves: CustomerSaveResult[] = [];
+    const savedCustomerMst = new Set<string>();
     const sortedRows = sortRowsByNgayNhap(rows);
 
     for (let i = 0; i < sortedRows.length; i += 1) {
@@ -118,6 +125,22 @@ export async function POST(request: Request) {
         const payload = buildInvoicePayload(row, i, buyer);
         await saveInvoice(payload, config);
         results.push({ excelRowNumber, stt, success: true });
+
+        const rowEmail = row.email?.trim() ?? "";
+        if (
+          shouldSaveCustomerToCatalog(buyer, rowEmail) &&
+          !savedCustomerMst.has(taxCheck.normalized)
+        ) {
+          const saveResult = await saveCustomerToCatalog(
+            buyer,
+            taxCheck.normalized,
+            rowEmail
+          );
+          customerSaves.push(saveResult);
+          if (saveResult.success) {
+            savedCustomerMst.add(taxCheck.normalized);
+          }
+        }
       } catch (err) {
         const rawMessage = err instanceof Error ? err.message : "Lỗi không xác định";
 
@@ -136,6 +159,7 @@ export async function POST(request: Request) {
       success,
       failed: rows.length - success,
       results,
+      customerSaves: customerSaves.length ? customerSaves : undefined,
     };
 
     return NextResponse.json(result);

@@ -6,6 +6,8 @@ const CUSTOMER_WINDOW_ID = "WIN00009";
 const DEFAULT_CUSTOMER_API =
   "https://0319266205.minvoice.com.vn/api/System/GetDataByWindowNo1";
 const DEFAULT_TAX_API = "https://mst.minvoice.com.vn/api/System/SearchTaxCodeV2";
+const DEFAULT_CUSTOMER_SAVE_API =
+  "https://0319266205.minvoice.com.vn/api/Category/CustomerSaveChange";
 
 export type BuyerInfo = {
   maDt: string;
@@ -19,6 +21,12 @@ export type BuyerLookupResult = {
   buyer?: BuyerInfo;
   traces: ApiTrace[];
   error?: string;
+};
+
+export type CustomerSaveResult = {
+  maSoThue: string;
+  success: boolean;
+  message?: string;
 };
 
 type CustomerRecord = {
@@ -288,4 +296,92 @@ export function formatTracesForMessage(traces: ApiTrace[]): string {
         `[${t.step}] ${t.method} ${t.api} → HTTP ${t.status ?? "?"} (${t.durationMs}ms)`
     )
     .join(" | ");
+}
+
+export function shouldSaveCustomerToCatalog(
+  buyer: BuyerInfo,
+  rowEmail: string
+): boolean {
+  return buyer.source === "taxcode" && Boolean(rowEmail.trim());
+}
+
+export async function saveCustomerToCatalog(
+  buyer: BuyerInfo,
+  maSoThue: string,
+  email: string
+): Promise<CustomerSaveResult> {
+  const apiUrl =
+    process.env.MINVOICE_CUSTOMER_SAVE_API_URL || DEFAULT_CUSTOMER_SAVE_API;
+
+  const payload = {
+    ma_dt: buyer.maDt || maSoThue,
+    ms_thue: maSoThue,
+    dt_me_id: "",
+    ten_dt: buyer.legalName,
+    email: email.trim(),
+    dai_dien: "",
+    dia_chi: buyer.address,
+    dien_thoai: "",
+    dien_giai: "",
+    fax: "",
+    cccdan: "",
+    mdvqhnsach_nmua: "",
+    ds_ngan_hang: [],
+    ma_dvcs: "VP",
+    editmode: 1,
+  };
+
+  try {
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Accept: "*/*",
+        "Content-Type": "application/json",
+        Authorization: getAuthToken(),
+        "Cache-Control": "no-cache",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const responseText = await readResponseText(response);
+
+    if (!response.ok) {
+      return {
+        maSoThue,
+        success: false,
+        message: `Lưu danh mục KH thất bại (HTTP ${response.status}): ${truncatePreview(responseText)}`,
+      };
+    }
+
+    let body: { code?: string; message?: string | null };
+    try {
+      body = JSON.parse(responseText) as { code?: string; message?: string | null };
+    } catch {
+      return {
+        maSoThue,
+        success: false,
+        message: "API danh mục KH trả về dữ liệu không hợp lệ",
+      };
+    }
+
+    if (body.code === "00") {
+      return {
+        maSoThue,
+        success: true,
+        message: "Đã lưu vào danh mục KH",
+      };
+    }
+
+    return {
+      maSoThue,
+      success: false,
+      message: body.message || `Mã lỗi API: ${body.code ?? "?"}`,
+    };
+  } catch (err) {
+    return {
+      maSoThue,
+      success: false,
+      message: err instanceof Error ? err.message : "Lưu danh mục KH thất bại",
+    };
+  }
 }

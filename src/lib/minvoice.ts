@@ -1,5 +1,5 @@
 import type { ApiTrace } from "@/lib/api-trace";
-import type { BuyerInfo } from "@/lib/customer";
+import type { BuyerInfo, CustomerSaveResult } from "@/lib/customer";
 import {
   formatNgayNhapApi,
   parseNgayNhap,
@@ -39,6 +39,7 @@ export type ImportResult = {
   success: number;
   failed: number;
   results: ImportRowResult[];
+  customerSaves?: CustomerSaveResult[];
 };
 
 export function getInvoiceSeries(date: Date): string {
