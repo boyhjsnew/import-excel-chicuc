@@ -233,6 +233,17 @@ async function lookupTaxByMaSoThue(
   return found ? body : null;
 }
 
+export function resolveInvoiceEmail(
+  buyer: BuyerInfo,
+  row?: Pick<InvoiceRow, "email">
+): string | null {
+  const fromCatalog = buyer.email?.trim();
+  if (fromCatalog) return fromCatalog;
+
+  const fromExcel = row?.email?.trim();
+  return fromExcel || null;
+}
+
 function fromExcel(row: InvoiceRow, maSoThue: string): BuyerInfo {
   return {
     maDt: maSoThue,
@@ -254,30 +265,28 @@ export async function resolveBuyerInfo(row: InvoiceRow): Promise<BuyerLookupResu
   try {
     const customer = await lookupCustomerByMsThue(maSoThue, traces);
     if (customer) {
-      return {
-        buyer: {
-          maDt: customer.ma_dt || maSoThue,
-          legalName: customer.ten_dt || row.dienGiai || "",
-          email: customer.email?.trim() || null,
-          address: customer.dia_chi || "",
-          source: "customer",
-        },
-        traces,
+      const buyer: BuyerInfo = {
+        maDt: customer.ma_dt || maSoThue,
+        legalName: customer.ten_dt || row.dienGiai || "",
+        email: customer.email?.trim() || null,
+        address: customer.dia_chi || "",
+        source: "customer",
       };
+      buyer.email = resolveInvoiceEmail(buyer, row);
+      return { buyer, traces };
     }
 
     const tax = await lookupTaxByMaSoThue(maSoThue, traces);
     if (tax) {
-      return {
-        buyer: {
-          maDt: tax.ma_so_thue || maSoThue,
-          legalName: tax.ten_cty || row.dienGiai || "",
-          email: null,
-          address: tax.dia_chi || "",
-          source: "taxcode",
-        },
-        traces,
+      const buyer: BuyerInfo = {
+        maDt: tax.ma_so_thue || maSoThue,
+        legalName: tax.ten_cty || row.dienGiai || "",
+        email: null,
+        address: tax.dia_chi || "",
+        source: "taxcode",
       };
+      buyer.email = resolveInvoiceEmail(buyer, row);
+      return { buyer, traces };
     }
 
     return { buyer: fromExcel(row, maSoThue), traces };

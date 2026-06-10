@@ -1,5 +1,9 @@
 import type { ApiTrace } from "@/lib/api-trace";
-import type { BuyerInfo, CustomerSaveResult } from "@/lib/customer";
+import {
+  resolveInvoiceEmail,
+  type BuyerInfo,
+  type CustomerSaveResult,
+} from "@/lib/customer";
 import {
   formatNgayNhapApi,
   parseNgayNhap,
@@ -106,7 +110,7 @@ export function buildInvoicePayload(
     inv_buyerLegalName: buyer.legalName,
     inv_buyerTaxCode: row.maSoThue || "",
     inv_buyerAddressLine: buyer.address,
-    inv_buyerEmail: buyer.email,
+    inv_buyerEmail: resolveInvoiceEmail(buyer, row),
     inv_paymentMethodName: "TM/CK",
     mau_hd: "01BLP0-001",
     inv_TotalAmountWithoutVat: soTien,
