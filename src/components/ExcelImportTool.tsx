@@ -18,6 +18,7 @@ import InvoicePreviewTable from "./InvoicePreviewTable";
 
 export default function ExcelImportTool() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const isImportingRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -87,7 +88,9 @@ export default function ExcelImportTool() {
 
   const handleImport = async () => {
     if (!parsedFile?.rows.length || parsedFile.taxCodeErrors.length > 0) return;
+    if (isImportingRef.current) return;
 
+    isImportingRef.current = true;
     setIsImporting(true);
     setError(null);
     setImportResult(null);
@@ -100,6 +103,7 @@ export default function ExcelImportTool() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import thất bại");
     } finally {
+      isImportingRef.current = false;
       setIsImporting(false);
       setImportStatus(null);
     }
@@ -152,7 +156,7 @@ export default function ExcelImportTool() {
                     ? "Sửa lỗi mã số thuế trước khi import"
                     : undefined
                 }
-                className="rounded-md bg-gray-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-900 disabled:opacity-50 sm:ml-auto sm:text-sm"
+                className="rounded-md bg-gray-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-900 disabled:pointer-events-none disabled:opacity-50 sm:ml-auto sm:text-sm"
               >
                 {isImporting
                   ? importStatus || "Đang import..."
