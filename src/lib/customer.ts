@@ -1,5 +1,6 @@
 import { createTrace, readResponseText, truncatePreview, type ApiTrace } from "@/lib/api-trace";
 import { assertMinvoiceConfig } from "@/lib/import-config";
+import { normalizeMaSoThue } from "@/lib/tax-code";
 import type { InvoiceRow } from "@/types/invoice";
 
 const CUSTOMER_WINDOW_ID = "WIN00009";
@@ -134,7 +135,7 @@ async function lookupCustomerByMsThue(
     );
   }
 
-  const found = Boolean(body.data?.length && (body.total_count ?? 0) > 0);
+  const matched = pickCustomerByExactMsThue(body.data ?? [], maSoThue);
 
   traces.push(
     createTrace(
@@ -145,13 +146,30 @@ async function lookupCustomerByMsThue(
       startedAt,
       response,
       true,
-      found
-        ? `Tìm thấy: ${body.data?.[0]?.ten_dt ?? maSoThue}${body.data?.[0]?.email?.trim() ? ` · email: ${body.data[0].email}` : " · email: (trống)"}`
-        : "Không có trong danh mục KH"
+      matched
+        ? `Tìm thấy: ${matched.ten_dt ?? maSoThue} · ms_thue: ${matched.ms_thue ?? maSoThue}${matched.email?.trim() ? ` · email: ${matched.email}` : " · email: (trống)"}${(body.data?.length ?? 0) > 1 ? ` (khớp exact trong ${body.data!.length} kết quả)` : ""}`
+        : body.data?.length
+          ? `Có ${body.data.length} kết quả nhưng không khớp exact ms_thue=${maSoThue}`
+          : "Không có trong danh mục KH"
     )
   );
 
-  return found ? body.data![0] : null;
+  return matched;
+}
+
+/** API filter ms_thue có thể trả cả công ty mẹ + chi nhánh → chọn đúng MST trên Excel. */
+function pickCustomerByExactMsThue(
+  records: CustomerRecord[],
+  maSoThue: string
+): CustomerRecord | null {
+  if (!records.length) return null;
+
+  const target = normalizeMaSoThue(maSoThue);
+  const exact = records.find(
+    (item) => normalizeMaSoThue(item.ms_thue ?? "") === target
+  );
+
+  return exact ?? null;
 }
 
 async function lookupTaxByMaSoThue(
