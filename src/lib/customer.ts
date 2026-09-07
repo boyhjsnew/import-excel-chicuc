@@ -7,6 +7,8 @@ const CUSTOMER_WINDOW_ID = "WIN00009";
 const DEFAULT_CUSTOMER_API =
   "https://0319266205.minvoice.com.vn/api/System/GetDataByWindowNo1";
 const DEFAULT_TAX_API = "https://mst.minvoice.com.vn/api/System/SearchTaxCodeV2";
+const DEFAULT_GDT_TAX_API =
+  "https://hoadondientu.gdt.gov.vn/api/category/public/dsdkts";
 const DEFAULT_CUSTOMER_SAVE_API =
   "https://0319266205.minvoice.com.vn/api/Category/CustomerSaveChange";
 
@@ -15,7 +17,7 @@ export type BuyerInfo = {
   legalName: string;
   email: string | null;
   address: string;
-  source: "customer" | "taxcode" | "excel";
+  source: "customer" | "taxcode" | "gdt" | "excel";
 };
 
 export type BuyerLookupResult = {
@@ -47,6 +49,18 @@ type TaxApiResponse = {
   ma_so_thue?: string;
   ten_cty?: string;
   dia_chi?: string;
+};
+
+type GdtTaxApiResponse = {
+  mst?: string;
+  tennnt?: string;
+  dctsdchi?: string;
+  dctstinh?: string;
+  dctsthuyen?: string;
+  dctstxa?: string;
+  dctstinhten?: string;
+  dctshuyenten?: string;
+  dctsxaten?: string;
 };
 
 function buildCustomerFilter(maSoThue: string) {
@@ -251,6 +265,119 @@ async function lookupTaxByMaSoThue(
   return found ? body : null;
 }
 
+/** Chuẩn hóa tỉnh/TP: "TP Hồ Chí Minh" → "Thành phố Hồ Chí Minh" */
+function normalizeProvinceName(value: string): string {
+  return value
+    .trim()
+    .replace(/^TP\.?\s+/i, "Thành phố ")
+    .replace(/^Tinh\s+/i, "Tỉnh ");
+}
+
+/** Ghép địa chỉ từ các trường GDT, bỏ phần trống. */
+export function buildGdtAddress(body: GdtTaxApiResponse): string {
+  const parts = [
+    body.dctsdchi,
+    body.dctsxaten || body.dctstxa,
+    body.dctshuyenten || body.dctsthuyen,
+    normalizeProvinceName(body.dctstinhten || body.dctstinh || ""),
+  ]
+    .map((part) => part?.trim() || "")
+    .filter(Boolean);
+
+  if (parts.length === 0) return "";
+  parts.push("Việt Nam");
+  return parts.join(", ");
+}
+
+async function lookupTaxByGdt(
+  taxCode: string,
+  traces: ApiTrace[]
+): Promise<TaxApiResponse | null> {
+  const baseUrl = (process.env.MINVOICE_GDT_TAX_API_URL || DEFAULT_GDT_TAX_API).replace(
+    /\/$/,
+    ""
+  );
+  const url = `${baseUrl}/${encodeURIComponent(taxCode)}/manager`;
+  const startedAt = Date.now();
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "*/*",
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+      Referer: "https://0319266205.minvoice.com.vn/",
+    },
+  });
+
+  const responseText = await readResponseText(response);
+
+  if (!response.ok) {
+    traces.push(
+      createTrace(
+        "lookup_tax_gdt",
+        "GDT_dsdkts",
+        "GET",
+        url,
+        startedAt,
+        response,
+        false,
+        responseText,
+        `HTTP ${response.status}`
+      )
+    );
+    // Backup API: không throw — fallback Excel
+    return null;
+  }
+
+  let body: GdtTaxApiResponse;
+  try {
+    body = JSON.parse(responseText) as GdtTaxApiResponse;
+  } catch {
+    traces.push(
+      createTrace(
+        "lookup_tax_gdt",
+        "GDT_dsdkts",
+        "GET",
+        url,
+        startedAt,
+        response,
+        false,
+        responseText,
+        "Response không phải JSON hợp lệ"
+      )
+    );
+    return null;
+  }
+
+  const legalName = body.tennnt?.trim() || "";
+  const address = buildGdtAddress(body);
+  const found = Boolean(legalName);
+
+  traces.push(
+    createTrace(
+      "lookup_tax_gdt",
+      "GDT_dsdkts",
+      "GET",
+      url,
+      startedAt,
+      response,
+      true,
+      found
+        ? `Tìm thấy: ${legalName}${address ? ` · ${address}` : ""}`
+        : "Không tìm thấy trên GDT"
+    )
+  );
+
+  if (!found) return null;
+
+  return {
+    ma_so_thue: body.mst || taxCode,
+    ten_cty: legalName,
+    dia_chi: address,
+  };
+}
+
 export function resolveInvoiceEmail(
   buyer: BuyerInfo,
   row?: Pick<InvoiceRow, "email">
@@ -294,7 +421,13 @@ export async function resolveBuyerInfo(row: InvoiceRow): Promise<BuyerLookupResu
       return { buyer, traces };
     }
 
-    const tax = await lookupTaxByMaSoThue(maSoThue, traces);
+    let tax: TaxApiResponse | null = null;
+    try {
+      tax = await lookupTaxByMaSoThue(maSoThue, traces);
+    } catch {
+      // SearchTaxCodeV2 lỗi → thử backup GDT
+    }
+
     if (tax) {
       const buyer: BuyerInfo = {
         maDt: tax.ma_so_thue || maSoThue,
@@ -302,6 +435,19 @@ export async function resolveBuyerInfo(row: InvoiceRow): Promise<BuyerLookupResu
         email: null,
         address: tax.dia_chi || "",
         source: "taxcode",
+      };
+      buyer.email = resolveInvoiceEmail(buyer, row);
+      return { buyer, traces };
+    }
+
+    const gdt = await lookupTaxByGdt(maSoThue, traces);
+    if (gdt) {
+      const buyer: BuyerInfo = {
+        maDt: gdt.ma_so_thue || maSoThue,
+        legalName: gdt.ten_cty || row.dienGiai || "",
+        email: null,
+        address: gdt.dia_chi || "",
+        source: "gdt",
       };
       buyer.email = resolveInvoiceEmail(buyer, row);
       return { buyer, traces };
@@ -329,7 +475,10 @@ export function shouldSaveCustomerToCatalog(
   buyer: BuyerInfo,
   rowEmail: string
 ): boolean {
-  return buyer.source === "taxcode" && Boolean(rowEmail.trim());
+  return (
+    (buyer.source === "taxcode" || buyer.source === "gdt") &&
+    Boolean(rowEmail.trim())
+  );
 }
 
 export async function saveCustomerToCatalog(
