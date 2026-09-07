@@ -1,8 +1,4 @@
 import { createTrace, readResponseText, truncatePreview, type ApiTrace } from "@/lib/api-trace";
-import {
-  fetchGdtTaxInfo,
-  getGdtTaxUrl,
-} from "@/lib/gdt-tax";
 import { assertMinvoiceConfig } from "@/lib/import-config";
 import { normalizeMaSoThue } from "@/lib/tax-code";
 import type { InvoiceRow } from "@/types/invoice";
@@ -23,10 +19,9 @@ export type BuyerInfo = {
 };
 
 export type BuyerLookupResult = {
-  buyer?: BuyerInfo;
+  buyer: BuyerInfo;
   traces: ApiTrace[];
-  error?: string;
-  /** Server không gọi được GDT (IP Vercel bị chặn) → client thử lại */
+  /** Không có KH/MST trên server → client gọi GDT */
   needsClientGdt?: boolean;
 };
 
@@ -74,6 +69,19 @@ export function getAuthToken(): string {
   return assertMinvoiceConfig().authToken;
 }
 
+function pickCustomerByExactMsThue(
+  records: CustomerRecord[],
+  maSoThue: string
+): CustomerRecord | null {
+  if (!records.length) return null;
+  const target = normalizeMaSoThue(maSoThue);
+  return (
+    records.find((item) => normalizeMaSoThue(item.ms_thue ?? "") === target) ??
+    null
+  );
+}
+
+/** Không throw — lỗi mạng chỉ ghi trace rồi trả null */
 async function lookupCustomerByMsThue(
   maSoThue: string,
   traces: ApiTrace[]
@@ -81,48 +89,64 @@ async function lookupCustomerByMsThue(
   const apiUrl = process.env.MINVOICE_CUSTOMER_API_URL || DEFAULT_CUSTOMER_API;
   const startedAt = Date.now();
 
-  const response = await fetch(apiUrl, {
-    method: "POST",
-    headers: {
-      Accept: "*/*",
-      "Content-Type": "application/json",
-      Authorization: getAuthToken(),
-      "Cache-Control": "no-cache",
-    },
-    body: JSON.stringify({
-      window_id: CUSTOMER_WINDOW_ID,
-      start: 0,
-      count: 50,
-      filter: buildCustomerFilter(maSoThue),
-      tlbparam: [],
-    }),
-  });
-
-  const responseText = await readResponseText(response);
-
-  if (!response.ok) {
-    traces.push(
-      createTrace(
-        "lookup_customer",
-        "GetDataByWindowNo1",
-        "POST",
-        apiUrl,
-        startedAt,
-        response,
-        false,
-        responseText,
-        `HTTP ${response.status}`
-      )
-    );
-    throw new Error(
-      `Tra cứu danh mục KH thất bại (HTTP ${response.status}). Kiểm tra MINVOICE_AUTH_TOKEN. Response: ${truncatePreview(responseText)}`
-    );
-  }
-
-  let body: CustomerApiResponse;
   try {
-    body = JSON.parse(responseText) as CustomerApiResponse;
-  } catch {
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Accept: "*/*",
+        "Content-Type": "application/json",
+        Authorization: getAuthToken(),
+        "Cache-Control": "no-cache",
+      },
+      body: JSON.stringify({
+        window_id: CUSTOMER_WINDOW_ID,
+        start: 0,
+        count: 50,
+        filter: buildCustomerFilter(maSoThue),
+        tlbparam: [],
+      }),
+    });
+
+    const responseText = await readResponseText(response);
+
+    if (!response.ok) {
+      traces.push(
+        createTrace(
+          "lookup_customer",
+          "GetDataByWindowNo1",
+          "POST",
+          apiUrl,
+          startedAt,
+          response,
+          false,
+          responseText,
+          `HTTP ${response.status}`
+        )
+      );
+      return null;
+    }
+
+    let body: CustomerApiResponse;
+    try {
+      body = JSON.parse(responseText) as CustomerApiResponse;
+    } catch {
+      traces.push(
+        createTrace(
+          "lookup_customer",
+          "GetDataByWindowNo1",
+          "POST",
+          apiUrl,
+          startedAt,
+          response,
+          false,
+          responseText,
+          "Response không phải JSON hợp lệ"
+        )
+      );
+      return null;
+    }
+
+    const matched = pickCustomerByExactMsThue(body.data ?? [], maSoThue);
     traces.push(
       createTrace(
         "lookup_customer",
@@ -131,53 +155,32 @@ async function lookupCustomerByMsThue(
         apiUrl,
         startedAt,
         response,
-        false,
-        responseText,
-        "Response không phải JSON hợp lệ"
+        true,
+        matched
+          ? `Tìm thấy: ${matched.ten_dt ?? maSoThue}`
+          : "Không có trong danh mục KH"
       )
     );
-    throw new Error(
-      `API danh mục KH trả về dữ liệu không hợp lệ. Response: ${truncatePreview(responseText)}`
+    return matched;
+  } catch (err) {
+    traces.push(
+      createTrace(
+        "lookup_customer",
+        "GetDataByWindowNo1",
+        "POST",
+        apiUrl,
+        startedAt,
+        null,
+        false,
+        undefined,
+        err instanceof Error ? err.message : "fetch failed"
+      )
     );
+    return null;
   }
-
-  const matched = pickCustomerByExactMsThue(body.data ?? [], maSoThue);
-
-  traces.push(
-    createTrace(
-      "lookup_customer",
-      "GetDataByWindowNo1",
-      "POST",
-      apiUrl,
-      startedAt,
-      response,
-      true,
-      matched
-        ? `Tìm thấy: ${matched.ten_dt ?? maSoThue} · ms_thue: ${matched.ms_thue ?? maSoThue}${matched.email?.trim() ? ` · email: ${matched.email}` : " · email: (trống)"}${(body.data?.length ?? 0) > 1 ? ` (khớp exact trong ${body.data!.length} kết quả)` : ""}`
-        : body.data?.length
-          ? `Có ${body.data.length} kết quả nhưng không khớp exact ms_thue=${maSoThue}`
-          : "Không có trong danh mục KH"
-    )
-  );
-
-  return matched;
 }
 
-/** API filter ms_thue có thể trả cả công ty mẹ + chi nhánh → chọn đúng MST trên Excel. */
-function pickCustomerByExactMsThue(
-  records: CustomerRecord[],
-  maSoThue: string
-): CustomerRecord | null {
-  if (!records.length) return null;
-
-  const target = normalizeMaSoThue(maSoThue);
-  const exact = records.find(
-    (item) => normalizeMaSoThue(item.ms_thue ?? "") === target
-  );
-
-  return exact ?? null;
-}
-
+/** Không throw */
 async function lookupTaxByMaSoThue(
   taxCode: string,
   traces: ApiTrace[]
@@ -186,125 +189,73 @@ async function lookupTaxByMaSoThue(
   const url = `${baseUrl}?tax=${encodeURIComponent(taxCode)}`;
   const startedAt = Date.now();
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/json, text/plain, */*",
-      "Cache-Control": "no-cache",
-    },
-  });
-
-  const responseText = await readResponseText(response);
-
-  if (!response.ok) {
-    traces.push(
-      createTrace(
-        "lookup_tax",
-        "SearchTaxCodeV2",
-        "GET",
-        url,
-        startedAt,
-        response,
-        false,
-        responseText,
-        `HTTP ${response.status}`
-      )
-    );
-    throw new Error(
-      `Tra cứu MST thất bại (HTTP ${response.status}). Response: ${truncatePreview(responseText)}`
-    );
-  }
-
-  let body: TaxApiResponse;
   try {
-    body = JSON.parse(responseText) as TaxApiResponse;
-  } catch {
-    traces.push(
-      createTrace(
-        "lookup_tax",
-        "SearchTaxCodeV2",
-        "GET",
-        url,
-        startedAt,
-        response,
-        false,
-        responseText,
-        "Response không phải JSON hợp lệ"
-      )
-    );
-    throw new Error(
-      `API MST trả về dữ liệu không hợp lệ. Response: ${truncatePreview(responseText)}`
-    );
-  }
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Cache-Control": "no-cache",
+      },
+    });
 
-  const found = Boolean(body.ten_cty);
+    const responseText = await readResponseText(response);
 
-  traces.push(
-    createTrace(
-      "lookup_tax",
-      "SearchTaxCodeV2",
-      "GET",
-      url,
-      startedAt,
-      response,
-      true,
-      found
-        ? `Tìm thấy: ${body.ten_cty} · email: (trống)`
-        : "Không tìm thấy trên hệ thống MST"
-    )
-  );
-
-  return found ? body : null;
-}
-
-async function lookupTaxByGdt(
-  taxCode: string,
-  traces: ApiTrace[]
-): Promise<TaxApiResponse | null> {
-  const url = getGdtTaxUrl(taxCode);
-  const startedAt = Date.now();
-
-  try {
-    const viaFetch = await fetchGdtTaxInfo(taxCode);
-    if (viaFetch) {
+    if (!response.ok) {
       traces.push(
         createTrace(
-          "lookup_tax_gdt",
-          "GDT_dsdkts",
+          "lookup_tax",
+          "SearchTaxCodeV2",
           "GET",
           url,
           startedAt,
-          null,
-          true,
-          `Tìm thấy: ${viaFetch.legalName}${viaFetch.address ? ` · ${viaFetch.address}` : ""}`
+          response,
+          false,
+          responseText,
+          `HTTP ${response.status}`
         )
       );
-      return {
-        ma_so_thue: viaFetch.maSoThue,
-        ten_cty: viaFetch.legalName,
-        dia_chi: viaFetch.address,
-      };
+      return null;
     }
 
+    let body: TaxApiResponse;
+    try {
+      body = JSON.parse(responseText) as TaxApiResponse;
+    } catch {
+      traces.push(
+        createTrace(
+          "lookup_tax",
+          "SearchTaxCodeV2",
+          "GET",
+          url,
+          startedAt,
+          response,
+          false,
+          responseText,
+          "Response không phải JSON hợp lệ"
+        )
+      );
+      return null;
+    }
+
+    const found = Boolean(body.ten_cty);
     traces.push(
       createTrace(
-        "lookup_tax_gdt",
-        "GDT_dsdkts",
+        "lookup_tax",
+        "SearchTaxCodeV2",
         "GET",
         url,
         startedAt,
-        null,
-        false,
-        undefined,
-        "Không gọi được GDT từ server (có thể bị chặn IP Vercel) — client sẽ thử lại"
+        response,
+        true,
+        found ? `Tìm thấy: ${body.ten_cty}` : "Không tìm thấy trên hệ thống MST"
       )
     );
-    return null;
+    return found ? body : null;
   } catch (err) {
     traces.push(
       createTrace(
-        "lookup_tax_gdt",
-        "GDT_dsdkts",
+        "lookup_tax",
+        "SearchTaxCodeV2",
         "GET",
         url,
         startedAt,
@@ -324,7 +275,6 @@ export function resolveInvoiceEmail(
 ): string | null {
   const fromCatalog = buyer.email?.trim();
   if (fromCatalog) return fromCatalog;
-
   const fromExcel = row?.email?.trim();
   return fromExcel || null;
 }
@@ -339,6 +289,11 @@ function fromExcel(row: InvoiceRow, maSoThue: string): BuyerInfo {
   };
 }
 
+/**
+ * Server chỉ: danh mục KH → SearchTaxCodeV2 → excel.
+ * GDT gọi từ browser (Vercel hay bị GDT chặn).
+ * Không bao giờ throw / không trả error 502 vì fetch failed.
+ */
 export async function resolveBuyerInfo(row: InvoiceRow): Promise<BuyerLookupResult> {
   const maSoThue = row.maSoThue.trim();
   const traces: ApiTrace[] = [];
@@ -347,64 +302,37 @@ export async function resolveBuyerInfo(row: InvoiceRow): Promise<BuyerLookupResu
     return { buyer: fromExcel(row, ""), traces };
   }
 
-  try {
-    const customer = await lookupCustomerByMsThue(maSoThue, traces);
-    if (customer) {
-      const buyer: BuyerInfo = {
-        maDt: customer.ma_dt || maSoThue,
-        legalName: customer.ten_dt || row.dienGiai || "",
-        email: customer.email?.trim() || null,
-        address: customer.dia_chi || "",
-        source: "customer",
-      };
-      buyer.email = resolveInvoiceEmail(buyer, row);
-      return { buyer, traces };
-    }
-
-    let tax: TaxApiResponse | null = null;
-    try {
-      tax = await lookupTaxByMaSoThue(maSoThue, traces);
-    } catch {
-      // SearchTaxCodeV2 lỗi → thử backup GDT
-    }
-
-    if (tax) {
-      const buyer: BuyerInfo = {
-        maDt: tax.ma_so_thue || maSoThue,
-        legalName: tax.ten_cty || row.dienGiai || "",
-        email: null,
-        address: tax.dia_chi || "",
-        source: "taxcode",
-      };
-      buyer.email = resolveInvoiceEmail(buyer, row);
-      return { buyer, traces };
-    }
-
-    const gdt = await lookupTaxByGdt(maSoThue, traces);
-    if (gdt) {
-      const buyer: BuyerInfo = {
-        maDt: gdt.ma_so_thue || maSoThue,
-        legalName: gdt.ten_cty || row.dienGiai || "",
-        email: null,
-        address: gdt.dia_chi || "",
-        source: "gdt",
-      };
-      buyer.email = resolveInvoiceEmail(buyer, row);
-      return { buyer, traces };
-    }
-
-    // GDT fail trên server (thường gặp trên Vercel) → trả excel, client sẽ thử GDT lại
-    return {
-      buyer: fromExcel(row, maSoThue),
-      traces,
-      needsClientGdt: true,
+  const customer = await lookupCustomerByMsThue(maSoThue, traces);
+  if (customer) {
+    const buyer: BuyerInfo = {
+      maDt: customer.ma_dt || maSoThue,
+      legalName: customer.ten_dt || row.dienGiai || "",
+      email: customer.email?.trim() || null,
+      address: customer.dia_chi || "",
+      source: "customer",
     };
-  } catch (err) {
-    return {
-      traces,
-      error: err instanceof Error ? err.message : "Tra cứu thất bại",
-    };
+    buyer.email = resolveInvoiceEmail(buyer, row);
+    return { buyer, traces };
   }
+
+  const tax = await lookupTaxByMaSoThue(maSoThue, traces);
+  if (tax) {
+    const buyer: BuyerInfo = {
+      maDt: tax.ma_so_thue || maSoThue,
+      legalName: tax.ten_cty || row.dienGiai || "",
+      email: null,
+      address: tax.dia_chi || "",
+      source: "taxcode",
+    };
+    buyer.email = resolveInvoiceEmail(buyer, row);
+    return { buyer, traces };
+  }
+
+  return {
+    buyer: fromExcel(row, maSoThue),
+    traces,
+    needsClientGdt: true,
+  };
 }
 
 export function formatTracesForMessage(traces: ApiTrace[]): string {
@@ -486,11 +414,7 @@ export async function saveCustomerToCatalog(
     }
 
     if (body.code === "00") {
-      return {
-        maSoThue,
-        success: true,
-        message: "Đã lưu vào danh mục KH",
-      };
+      return { maSoThue, success: true, message: "Đã lưu vào danh mục KH" };
     }
 
     return {

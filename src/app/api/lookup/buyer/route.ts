@@ -35,19 +35,6 @@ export async function POST(request: Request) {
 
     const result = await resolveBuyerInfo(lookupRow);
 
-    if (result.error) {
-      return NextResponse.json(
-        {
-          ok: false,
-          maSoThue: lookupRow.maSoThue,
-          error: result.error,
-          traces: result.traces,
-          traceSummary: formatTracesForMessage(result.traces),
-        },
-        { status: 502 }
-      );
-    }
-
     return NextResponse.json({
       ok: true,
       maSoThue: lookupRow.maSoThue,

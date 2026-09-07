@@ -162,13 +162,8 @@ export async function lookupBuyer(
 
   const data = (await response.json()) as LookupBuyerResponse;
 
-  // Vercel server thường không gọi được GDT → thử lại từ trình duyệt (CORS OK)
-  if (
-    data.ok &&
-    data.needsClientGdt &&
-    data.buyer &&
-    (data.buyer.source === "excel" || !data.buyer.address)
-  ) {
+  // GDT chỉ gọi từ browser (server Vercel thường bị chặn)
+  if (data.ok && data.needsClientGdt && data.buyer) {
     const gdt = await fetchGdtTaxInfo(maSoThue);
     if (gdt) {
       const buyer: BuyerInfo = {
@@ -181,12 +176,6 @@ export async function lookupBuyer(
       buyer.email = resolveInvoiceEmail(buyer, row);
       data.buyer = buyer;
       data.needsClientGdt = false;
-      data.traceSummary = [
-        data.traceSummary,
-        "[lookup_tax_gdt_client] GET GDT_dsdkts → OK (browser)",
-      ]
-        .filter(Boolean)
-        .join(" | ");
     }
   }
 
