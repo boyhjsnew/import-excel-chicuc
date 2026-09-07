@@ -1,4 +1,8 @@
 import { createTrace, readResponseText, truncatePreview, type ApiTrace } from "@/lib/api-trace";
+import {
+  fetchGdtTaxInfo,
+  getGdtTaxUrl,
+} from "@/lib/gdt-tax";
 import { assertMinvoiceConfig } from "@/lib/import-config";
 import { normalizeMaSoThue } from "@/lib/tax-code";
 import type { InvoiceRow } from "@/types/invoice";
@@ -7,8 +11,6 @@ const CUSTOMER_WINDOW_ID = "WIN00009";
 const DEFAULT_CUSTOMER_API =
   "https://0319266205.minvoice.com.vn/api/System/GetDataByWindowNo1";
 const DEFAULT_TAX_API = "https://mst.minvoice.com.vn/api/System/SearchTaxCodeV2";
-const DEFAULT_GDT_TAX_API =
-  "https://hoadondientu.gdt.gov.vn/api/category/public/dsdkts";
 const DEFAULT_CUSTOMER_SAVE_API =
   "https://0319266205.minvoice.com.vn/api/Category/CustomerSaveChange";
 
@@ -24,6 +26,8 @@ export type BuyerLookupResult = {
   buyer?: BuyerInfo;
   traces: ApiTrace[];
   error?: string;
+  /** Server không gọi được GDT (IP Vercel bị chặn) → client thử lại */
+  needsClientGdt?: boolean;
 };
 
 export type CustomerSaveResult = {
@@ -49,18 +53,6 @@ type TaxApiResponse = {
   ma_so_thue?: string;
   ten_cty?: string;
   dia_chi?: string;
-};
-
-type GdtTaxApiResponse = {
-  mst?: string;
-  tennnt?: string;
-  dctsdchi?: string;
-  dctstinh?: string;
-  dctsthuyen?: string;
-  dctstxa?: string;
-  dctstinhten?: string;
-  dctshuyenten?: string;
-  dctsxaten?: string;
 };
 
 function buildCustomerFilter(maSoThue: string) {
@@ -265,75 +257,35 @@ async function lookupTaxByMaSoThue(
   return found ? body : null;
 }
 
-/** Chuẩn hóa tỉnh/TP: "TP Hồ Chí Minh" → "Thành phố Hồ Chí Minh" */
-function normalizeProvinceName(value: string): string {
-  return value
-    .trim()
-    .replace(/^TP\.?\s+/i, "Thành phố ")
-    .replace(/^Tinh\s+/i, "Tỉnh ");
-}
-
-/** Ghép địa chỉ từ các trường GDT, bỏ phần trống. */
-export function buildGdtAddress(body: GdtTaxApiResponse): string {
-  const parts = [
-    body.dctsdchi,
-    body.dctsxaten || body.dctstxa,
-    body.dctshuyenten || body.dctsthuyen,
-    normalizeProvinceName(body.dctstinhten || body.dctstinh || ""),
-  ]
-    .map((part) => part?.trim() || "")
-    .filter(Boolean);
-
-  if (parts.length === 0) return "";
-  parts.push("Việt Nam");
-  return parts.join(", ");
-}
-
 async function lookupTaxByGdt(
   taxCode: string,
   traces: ApiTrace[]
 ): Promise<TaxApiResponse | null> {
-  const baseUrl = (process.env.MINVOICE_GDT_TAX_API_URL || DEFAULT_GDT_TAX_API).replace(
-    /\/$/,
-    ""
-  );
-  const url = `${baseUrl}/${encodeURIComponent(taxCode)}/manager`;
+  const url = getGdtTaxUrl(taxCode);
   const startedAt = Date.now();
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "*/*",
-      "Cache-Control": "no-cache",
-      Pragma: "no-cache",
-      Referer: "https://0319266205.minvoice.com.vn/",
-    },
-  });
-
-  const responseText = await readResponseText(response);
-
-  if (!response.ok) {
-    traces.push(
-      createTrace(
-        "lookup_tax_gdt",
-        "GDT_dsdkts",
-        "GET",
-        url,
-        startedAt,
-        response,
-        false,
-        responseText,
-        `HTTP ${response.status}`
-      )
-    );
-    // Backup API: không throw — fallback Excel
-    return null;
-  }
-
-  let body: GdtTaxApiResponse;
   try {
-    body = JSON.parse(responseText) as GdtTaxApiResponse;
-  } catch {
+    const viaFetch = await fetchGdtTaxInfo(taxCode);
+    if (viaFetch) {
+      traces.push(
+        createTrace(
+          "lookup_tax_gdt",
+          "GDT_dsdkts",
+          "GET",
+          url,
+          startedAt,
+          null,
+          true,
+          `Tìm thấy: ${viaFetch.legalName}${viaFetch.address ? ` · ${viaFetch.address}` : ""}`
+        )
+      );
+      return {
+        ma_so_thue: viaFetch.maSoThue,
+        ten_cty: viaFetch.legalName,
+        dia_chi: viaFetch.address,
+      };
+    }
+
     traces.push(
       createTrace(
         "lookup_tax_gdt",
@@ -341,41 +293,29 @@ async function lookupTaxByGdt(
         "GET",
         url,
         startedAt,
-        response,
+        null,
         false,
-        responseText,
-        "Response không phải JSON hợp lệ"
+        undefined,
+        "Không gọi được GDT từ server (có thể bị chặn IP Vercel) — client sẽ thử lại"
+      )
+    );
+    return null;
+  } catch (err) {
+    traces.push(
+      createTrace(
+        "lookup_tax_gdt",
+        "GDT_dsdkts",
+        "GET",
+        url,
+        startedAt,
+        null,
+        false,
+        undefined,
+        err instanceof Error ? err.message : "fetch failed"
       )
     );
     return null;
   }
-
-  const legalName = body.tennnt?.trim() || "";
-  const address = buildGdtAddress(body);
-  const found = Boolean(legalName);
-
-  traces.push(
-    createTrace(
-      "lookup_tax_gdt",
-      "GDT_dsdkts",
-      "GET",
-      url,
-      startedAt,
-      response,
-      true,
-      found
-        ? `Tìm thấy: ${legalName}${address ? ` · ${address}` : ""}`
-        : "Không tìm thấy trên GDT"
-    )
-  );
-
-  if (!found) return null;
-
-  return {
-    ma_so_thue: body.mst || taxCode,
-    ten_cty: legalName,
-    dia_chi: address,
-  };
 }
 
 export function resolveInvoiceEmail(
@@ -453,7 +393,12 @@ export async function resolveBuyerInfo(row: InvoiceRow): Promise<BuyerLookupResu
       return { buyer, traces };
     }
 
-    return { buyer: fromExcel(row, maSoThue), traces };
+    // GDT fail trên server (thường gặp trên Vercel) → trả excel, client sẽ thử GDT lại
+    return {
+      buyer: fromExcel(row, maSoThue),
+      traces,
+      needsClientGdt: true,
+    };
   } catch (err) {
     return {
       traces,

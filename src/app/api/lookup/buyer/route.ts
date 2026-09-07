@@ -52,6 +52,7 @@ export async function POST(request: Request) {
       ok: true,
       maSoThue: lookupRow.maSoThue,
       buyer: result.buyer,
+      needsClientGdt: result.needsClientGdt === true,
       traces: result.traces,
       traceSummary: formatTracesForMessage(result.traces),
     });
