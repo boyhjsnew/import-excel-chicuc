@@ -29,7 +29,7 @@ export function getBuyerSourceLabel(source: BuyerSource): string {
 }
 
 /** Tên công ty chỉ lấy từ danh mục / MST / QLHD — không lấy diễn giải Excel. */
-export function isOfficialBuyer(buyer?: BuyerInfo): boolean {
+export function isOfficialBuyer(buyer?: BuyerInfo): buyer is BuyerInfo {
   return Boolean(buyer && buyer.source !== "excel" && buyer.legalName.trim());
 }
 
