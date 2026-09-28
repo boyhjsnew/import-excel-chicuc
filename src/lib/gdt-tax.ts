@@ -21,9 +21,7 @@ const DEFAULT_GDT_TAX_API =
 
 export function getGdtTaxApiBase(): string {
   const fromEnv =
-    typeof process !== "undefined"
-      ? process.env.MINVOICE_GDT_TAX_API_URL || process.env.NEXT_PUBLIC_GDT_TAX_API_URL
-      : undefined;
+    typeof process !== "undefined" ? process.env.MINVOICE_GDT_TAX_API_URL : undefined;
   return (fromEnv || DEFAULT_GDT_TAX_API).replace(/\/$/, "");
 }
 
@@ -80,9 +78,8 @@ export async function fetchGdtTaxInfo(taxCode: string): Promise<GdtTaxInfo | nul
         Accept: "application/json, text/plain, */*",
         "Cache-Control": "no-cache",
         Pragma: "no-cache",
+        Referer: "https://test-qlhd.minvoice.com.vn/",
       },
-      // Browser: không gửi cookie cross-site
-      credentials: "omit",
       cache: "no-store",
     });
 

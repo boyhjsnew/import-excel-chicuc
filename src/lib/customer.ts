@@ -1,4 +1,5 @@
 import { createTrace, readResponseText, truncatePreview, type ApiTrace } from "@/lib/api-trace";
+import { fetchGdtTaxInfo, getGdtTaxUrl } from "@/lib/gdt-tax";
 import { assertMinvoiceConfig } from "@/lib/import-config";
 import { normalizeMaSoThue } from "@/lib/tax-code";
 import type { InvoiceRow } from "@/types/invoice";
@@ -23,15 +24,18 @@ export type BuyerInfo = {
 export function getBuyerSourceLabel(source: BuyerSource): string {
   if (source === "customer") return "Danh mục KH";
   if (source === "taxcode") return "MST Minvoice";
-  if (source === "gdt") return "GDT";
-  return "Excel";
+  if (source === "gdt") return "QLHD";
+  return "Không tra cứu được";
+}
+
+/** Tên công ty chỉ lấy từ danh mục / MST / QLHD — không lấy diễn giải Excel. */
+export function isOfficialBuyer(buyer?: BuyerInfo): boolean {
+  return Boolean(buyer && buyer.source !== "excel" && buyer.legalName.trim());
 }
 
 export type BuyerLookupResult = {
   buyer: BuyerInfo;
   traces: ApiTrace[];
-  /** Không có KH/MST trên server → client gọi GDT */
-  needsClientGdt?: boolean;
 };
 
 export type CustomerSaveResult = {
@@ -278,6 +282,53 @@ async function lookupTaxByMaSoThue(
   }
 }
 
+async function lookupTaxByGdt(
+  taxCode: string,
+  traces: ApiTrace[]
+): Promise<TaxApiResponse | null> {
+  const url = getGdtTaxUrl(taxCode);
+  const startedAt = Date.now();
+
+  try {
+    const found = await fetchGdtTaxInfo(taxCode);
+    traces.push(
+      createTrace(
+        "lookup_tax_gdt",
+        "QLHD_dsdkts",
+        "GET",
+        url,
+        startedAt,
+        null,
+        Boolean(found),
+        found
+          ? `Tìm thấy: ${found.legalName}${found.address ? ` · ${found.address}` : ""}`
+          : "Không tìm thấy trên QLHD"
+      )
+    );
+    if (!found) return null;
+    return {
+      ma_so_thue: found.maSoThue,
+      ten_cty: found.legalName,
+      dia_chi: found.address,
+    };
+  } catch (err) {
+    traces.push(
+      createTrace(
+        "lookup_tax_gdt",
+        "QLHD_dsdkts",
+        "GET",
+        url,
+        startedAt,
+        null,
+        false,
+        undefined,
+        err instanceof Error ? err.message : "fetch failed"
+      )
+    );
+    return null;
+  }
+}
+
 export function resolveInvoiceEmail(
   buyer: BuyerInfo,
   row?: Pick<InvoiceRow, "email">
@@ -291,7 +342,7 @@ export function resolveInvoiceEmail(
 function fromExcel(row: InvoiceRow, maSoThue: string): BuyerInfo {
   return {
     maDt: maSoThue,
-    legalName: row.dienGiai || "",
+    legalName: "",
     email: row.email || null,
     address: "",
     source: "excel",
@@ -299,9 +350,8 @@ function fromExcel(row: InvoiceRow, maSoThue: string): BuyerInfo {
 }
 
 /**
- * Server chỉ: danh mục KH → SearchTaxCodeV2 → excel.
- * GDT gọi từ browser (Vercel hay bị GDT chặn).
- * Không bao giờ throw / không trả error 502 vì fetch failed.
+ * Danh mục KH → SearchTaxCodeV2 → QLHD (server, giống Postman) → excel.
+ * Không throw vì fetch failed.
  */
 export async function resolveBuyerInfo(row: InvoiceRow): Promise<BuyerLookupResult> {
   const maSoThue = row.maSoThue.trim();
@@ -315,7 +365,7 @@ export async function resolveBuyerInfo(row: InvoiceRow): Promise<BuyerLookupResu
   if (customer) {
     const buyer: BuyerInfo = {
       maDt: customer.ma_dt || maSoThue,
-      legalName: customer.ten_dt || row.dienGiai || "",
+      legalName: customer.ten_dt?.trim() || "",
       email: customer.email?.trim() || null,
       address: customer.dia_chi || "",
       source: "customer",
@@ -328,7 +378,7 @@ export async function resolveBuyerInfo(row: InvoiceRow): Promise<BuyerLookupResu
   if (tax) {
     const buyer: BuyerInfo = {
       maDt: tax.ma_so_thue || maSoThue,
-      legalName: tax.ten_cty || row.dienGiai || "",
+      legalName: tax.ten_cty?.trim() || "",
       email: null,
       address: tax.dia_chi || "",
       source: "taxcode",
@@ -337,11 +387,20 @@ export async function resolveBuyerInfo(row: InvoiceRow): Promise<BuyerLookupResu
     return { buyer, traces };
   }
 
-  return {
-    buyer: fromExcel(row, maSoThue),
-    traces,
-    needsClientGdt: true,
-  };
+  const gdt = await lookupTaxByGdt(maSoThue, traces);
+  if (gdt) {
+    const buyer: BuyerInfo = {
+      maDt: gdt.ma_so_thue || maSoThue,
+      legalName: gdt.ten_cty?.trim() || "",
+      email: null,
+      address: gdt.dia_chi || "",
+      source: "gdt",
+    };
+    buyer.email = resolveInvoiceEmail(buyer, row);
+    return { buyer, traces };
+  }
+
+  return { buyer: fromExcel(row, maSoThue), traces };
 }
 
 export function formatTracesForMessage(traces: ApiTrace[]): string {

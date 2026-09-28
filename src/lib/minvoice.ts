@@ -9,7 +9,6 @@ import {
   parseNgayNhap,
   sortRowsByNgayNhap,
 } from "@/lib/date";
-import { fetchGdtTaxInfo } from "@/lib/gdt-tax";
 import { normalizeMaSoThue } from "@/lib/tax-code";
 import type { InvoiceRow } from "@/types/invoice";
 
@@ -26,7 +25,6 @@ export type LookupBuyerResponse = {
   ok: boolean;
   maSoThue: string;
   buyer?: BuyerInfo;
-  needsClientGdt?: boolean;
   error?: string;
   traces: ApiTrace[];
   traceSummary?: string;
@@ -161,24 +159,6 @@ export async function lookupBuyer(
   });
 
   const data = (await response.json()) as LookupBuyerResponse;
-
-  // GDT chỉ gọi từ browser (server Vercel thường bị chặn)
-  if (data.ok && data.needsClientGdt && data.buyer) {
-    const gdt = await fetchGdtTaxInfo(maSoThue);
-    if (gdt) {
-      const buyer: BuyerInfo = {
-        maDt: gdt.maSoThue || maSoThue,
-        legalName: gdt.legalName || row?.dienGiai || data.buyer.legalName || "",
-        email: null,
-        address: gdt.address,
-        source: "gdt",
-      };
-      buyer.email = resolveInvoiceEmail(buyer, row);
-      data.buyer = buyer;
-      data.needsClientGdt = false;
-    }
-  }
-
   return { httpStatus: response.status, endpoint, data };
 }
 

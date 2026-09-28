@@ -118,8 +118,10 @@ export async function POST(request: Request) {
         }
 
         const buyer = buyers[taxCheck.normalized];
-        if (!buyer) {
-          throw new Error(`Chưa tra cứu thông tin cho MST ${taxCheck.normalized}`);
+        if (!buyer || buyer.source === "excel" || !buyer.legalName.trim()) {
+          throw new Error(
+            `Chưa tra cứu được tên công ty cho MST ${taxCheck.normalized}. Không dùng cột Diễn giải trên Excel.`
+          );
         }
 
         const payload = buildInvoicePayload(row, i, buyer);

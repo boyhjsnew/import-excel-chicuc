@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { downloadSampleTemplate, parseInvoiceExcel } from "@/lib/excel";
 import {
   getBuyerSourceLabel,
+  isOfficialBuyer,
   type BuyerInfo,
 } from "@/lib/customer";
 import {
@@ -65,8 +66,10 @@ export default function ExcelImportTool() {
 
       try {
         const result = await lookupBuyer(mst, sampleRow);
-        if (!result.data.ok || !result.data.buyer) {
-          nextErrors[mst] = formatLookupError(result);
+        if (!result.data.ok || !isOfficialBuyer(result.data.buyer)) {
+          nextErrors[mst] = result.data.ok
+            ? `Không tra cứu được tên công ty cho MST ${mst}. Không lấy từ cột Diễn giải Excel.`
+            : formatLookupError(result);
           continue;
         }
         nextBuyers[mst] = result.data.buyer;
@@ -136,7 +139,7 @@ export default function ExcelImportTool() {
 
     return parsedFile.rows.filter((row) => {
       const mst = normalizeMaSoThue(row.maSoThue);
-      if (!buyers[mst]) return false;
+      if (!isOfficialBuyer(buyers[mst])) return false;
 
       const state = rowStates[row.excelRowNumber];
       if (state?.status === "success") return false;
@@ -210,7 +213,6 @@ export default function ExcelImportTool() {
   const canRetryFailed = lookupDone && getImportableRows(true).length > 0;
   const busy = isLoading || isLookingUp || isImporting;
   const lookupErrorCount = Object.keys(lookupErrors).length;
-  const excelOnlyCount = Object.values(buyers).filter((item) => item.source === "excel").length;
 
   return (
     <div className="w-full overflow-x-hidden bg-gray-50 px-3 py-4 sm:px-4">
@@ -311,7 +313,7 @@ export default function ExcelImportTool() {
                     {" · "}
                     <span>
                       Tra cứu {Object.keys(buyers).length} MST
-                      {excelOnlyCount > 0 ? ` · ${excelOnlyCount} lấy từ Excel` : ""}
+                      {lookupErrorCount > 0 ? ` · ${lookupErrorCount} không ra tên CTY` : ""}
                     </span>
                   </>
                 )}
