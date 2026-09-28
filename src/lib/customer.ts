@@ -10,13 +10,22 @@ const DEFAULT_TAX_API = "https://mst.minvoice.com.vn/api/System/SearchTaxCodeV2"
 const DEFAULT_CUSTOMER_SAVE_API =
   "https://0319266205.minvoice.com.vn/api/Category/CustomerSaveChange";
 
+export type BuyerSource = "customer" | "taxcode" | "gdt" | "excel";
+
 export type BuyerInfo = {
   maDt: string;
   legalName: string;
   email: string | null;
   address: string;
-  source: "customer" | "taxcode" | "gdt" | "excel";
+  source: BuyerSource;
 };
+
+export function getBuyerSourceLabel(source: BuyerSource): string {
+  if (source === "customer") return "Danh mục KH";
+  if (source === "taxcode") return "MST Minvoice";
+  if (source === "gdt") return "GDT";
+  return "Excel";
+}
 
 export type BuyerLookupResult = {
   buyer: BuyerInfo;

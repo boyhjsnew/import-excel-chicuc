@@ -30,3 +30,10 @@ export type ParsedInvoiceFile = {
   totalRows: number;
   taxCodeErrors: TaxCodeRowError[];
 };
+
+export type RowImportStatus = "pending" | "success" | "failed";
+
+export type RowImportState = {
+  status: RowImportStatus;
+  message?: string;
+};

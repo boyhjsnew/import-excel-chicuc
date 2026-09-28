@@ -186,6 +186,37 @@ export function formatLookupError(result: LookupBuyerCallResult): string {
   return result.data.error || "Tra cứu thất bại";
 }
 
+export function mergeImportResults(
+  previous: ImportResult | null,
+  next: ImportResult
+): ImportResult {
+  const byRow = new Map<number, ImportRowResult>();
+
+  previous?.results.forEach((item) => {
+    byRow.set(item.excelRowNumber, item);
+  });
+  next.results.forEach((item) => {
+    byRow.set(item.excelRowNumber, item);
+  });
+
+  const results = Array.from(byRow.values()).sort(
+    (a, b) => a.excelRowNumber - b.excelRowNumber
+  );
+  const success = results.filter((item) => item.success).length;
+  const customerSaves = [
+    ...(previous?.customerSaves ?? []),
+    ...(next.customerSaves ?? []),
+  ];
+
+  return {
+    total: results.length,
+    success,
+    failed: results.length - success,
+    results,
+    customerSaves: customerSaves.length ? customerSaves : undefined,
+  };
+}
+
 export async function importBienLaiRows(
   rows: InvoiceRow[],
   buyers: Record<string, BuyerInfo>

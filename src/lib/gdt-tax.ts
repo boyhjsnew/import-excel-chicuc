@@ -17,7 +17,7 @@ export type GdtTaxInfo = {
 };
 
 const DEFAULT_GDT_TAX_API =
-  "https://hoadondientu.gdt.gov.vn/api/category/public/dsdkts";
+  "https://test-qlhd.minvoice.com.vn/api/category/public/dsdkts";
 
 export function getGdtTaxApiBase(): string {
   const fromEnv =
@@ -77,7 +77,7 @@ export async function fetchGdtTaxInfo(taxCode: string): Promise<GdtTaxInfo | nul
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        Accept: "*/*",
+        Accept: "application/json, text/plain, */*",
         "Cache-Control": "no-cache",
         Pragma: "no-cache",
       },

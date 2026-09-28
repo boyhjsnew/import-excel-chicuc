@@ -2,30 +2,84 @@
 
 import { useCallback, useRef, useState } from "react";
 import { downloadSampleTemplate, parseInvoiceExcel } from "@/lib/excel";
-import type { BuyerInfo } from "@/lib/customer";
+import {
+  getBuyerSourceLabel,
+  type BuyerInfo,
+} from "@/lib/customer";
 import {
   formatLookupError,
   getUniqueMaSoThue,
   importBienLaiRows,
   lookupBuyer,
+  mergeImportResults,
   sortRowsByNgayNhap,
   type ImportResult,
 } from "@/lib/minvoice";
 import { formatExcelRowLabel, normalizeMaSoThue } from "@/lib/tax-code";
-import type { ParsedInvoiceFile } from "@/types/invoice";
+import type { ParsedInvoiceFile, RowImportState } from "@/types/invoice";
 import ImportResultList from "./ImportResultList";
 import InvoicePreviewTable from "./InvoicePreviewTable";
 
+function emptyRowStates(file: ParsedInvoiceFile): Record<number, RowImportState> {
+  return Object.fromEntries(
+    file.rows.map((row) => [row.excelRowNumber, { status: "pending" as const }])
+  );
+}
+
 export default function ExcelImportTool() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const isImportingRef = useRef(false);
+  const isBusyRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLookingUp, setIsLookingUp] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const [importStatus, setImportStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [parsedFile, setParsedFile] = useState<ParsedInvoiceFile | null>(null);
+  const [buyers, setBuyers] = useState<Record<string, BuyerInfo>>({});
+  const [lookupErrors, setLookupErrors] = useState<Record<string, string>>({});
+  const [lookupDone, setLookupDone] = useState(false);
+  const [rowStates, setRowStates] = useState<Record<number, RowImportState>>({});
+
+  const resetSession = () => {
+    setParsedFile(null);
+    setError(null);
+    setImportResult(null);
+    setStatus(null);
+    setBuyers({});
+    setLookupErrors({});
+    setLookupDone(false);
+    setRowStates({});
+  };
+
+  const runLookup = async (rows: ParsedInvoiceFile["rows"]) => {
+    const nextBuyers: Record<string, BuyerInfo> = {};
+    const nextErrors: Record<string, string> = {};
+    const uniqueMst = getUniqueMaSoThue(rows);
+
+    for (let i = 0; i < uniqueMst.length; i += 1) {
+      const mst = uniqueMst[i];
+      setStatus(`Đang tra cứu MST ${mst} (${i + 1}/${uniqueMst.length})...`);
+      const sampleRow = rows.find((row) => normalizeMaSoThue(row.maSoThue) === mst)!;
+
+      try {
+        const result = await lookupBuyer(mst, sampleRow);
+        if (!result.data.ok || !result.data.buyer) {
+          nextErrors[mst] = formatLookupError(result);
+          continue;
+        }
+        nextBuyers[mst] = result.data.buyer;
+      } catch (err) {
+        nextErrors[mst] = err instanceof Error ? err.message : "Tra cứu thất bại";
+      }
+    }
+
+    setBuyers(nextBuyers);
+    setLookupErrors(nextErrors);
+    setLookupDone(true);
+    return { nextBuyers, nextErrors };
+  };
 
   const handleFile = useCallback(async (file: File) => {
     if (!file.name.endsWith(".xlsx") && !file.name.endsWith(".xls")) {
@@ -36,14 +90,31 @@ export default function ExcelImportTool() {
     setIsLoading(true);
     setError(null);
     setImportResult(null);
+    setBuyers({});
+    setLookupErrors({});
+    setLookupDone(false);
+    setRowStates({});
 
     try {
-      setParsedFile(await parseInvoiceExcel(file));
+      const parsed = await parseInvoiceExcel(file);
+      setParsedFile(parsed);
+      setRowStates(emptyRowStates(parsed));
+
+      if (!parsed.rows.length || parsed.taxCodeErrors.length > 0) {
+        return;
+      }
+
+      setIsLookingUp(true);
+      isBusyRef.current = true;
+      await runLookup(parsed.rows);
     } catch (err) {
       setParsedFile(null);
       setError(err instanceof Error ? err.message : "Không đọc được file.");
     } finally {
+      isBusyRef.current = false;
       setIsLoading(false);
+      setIsLookingUp(false);
+      setStatus(null);
     }
   }, []);
 
@@ -60,58 +131,86 @@ export default function ExcelImportTool() {
     if (file) void handleFile(file);
   };
 
-  const reset = () => {
-    setParsedFile(null);
-    setError(null);
-    setImportResult(null);
-    setImportStatus(null);
+  const getImportableRows = (failedOnly: boolean) => {
+    if (!parsedFile) return [];
+
+    return parsedFile.rows.filter((row) => {
+      const mst = normalizeMaSoThue(row.maSoThue);
+      if (!buyers[mst]) return false;
+
+      const state = rowStates[row.excelRowNumber];
+      if (state?.status === "success") return false;
+      if (failedOnly) return state?.status === "failed";
+      return true;
+    });
   };
 
-  const runLookup = async (rows: ParsedInvoiceFile["rows"]) => {
-    const buyers: Record<string, BuyerInfo> = {};
-    const uniqueMst = getUniqueMaSoThue(rows);
-
-    for (const mst of uniqueMst) {
-      setImportStatus(`Đang tra cứu MST ${mst}...`);
-      const sampleRow = rows.find((row) => normalizeMaSoThue(row.maSoThue) === mst)!;
-      const result = await lookupBuyer(mst, sampleRow);
-
-      if (!result.data.ok || !result.data.buyer) {
-        throw new Error(formatLookupError(result));
-      }
-
-      buyers[mst] = result.data.buyer;
-    }
-
-    return buyers;
-  };
-
-  const handleImport = async () => {
+  const handleImport = async (failedOnly: boolean) => {
     if (!parsedFile?.rows.length || parsedFile.taxCodeErrors.length > 0) return;
-    if (isImportingRef.current) return;
+    if (!lookupDone || isBusyRef.current) return;
 
-    isImportingRef.current = true;
+    const rowsToImport = getImportableRows(failedOnly);
+    if (!rowsToImport.length) return;
+
+    isBusyRef.current = true;
     setIsImporting(true);
     setError(null);
-    setImportResult(null);
 
     try {
-      const buyers = await runLookup(parsedFile.rows);
-      setImportStatus("Đang lưu biên lai (theo thứ tự ngày)...");
-      const sortedRows = sortRowsByNgayNhap(parsedFile.rows);
-      setImportResult(await importBienLaiRows(sortedRows, buyers));
+      setStatus(
+        failedOnly
+          ? `Đang import ${rowsToImport.length} dòng lỗi...`
+          : `Đang lưu biên lai (${rowsToImport.length} dòng)...`
+      );
+      const sortedRows = sortRowsByNgayNhap(rowsToImport);
+      const next = await importBienLaiRows(sortedRows, buyers);
+      const merged = mergeImportResults(importResult, next);
+      setImportResult(merged);
+      setRowStates((prev) => {
+        const copy = { ...prev };
+        next.results.forEach((item) => {
+          copy[item.excelRowNumber] = {
+            status: item.success ? "success" : "failed",
+            message: item.message,
+          };
+        });
+        return copy;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import thất bại");
     } finally {
-      isImportingRef.current = false;
+      isBusyRef.current = false;
       setIsImporting(false);
-      setImportStatus(null);
+      setStatus(null);
     }
   };
 
   const hasRows = parsedFile && parsedFile.rows.length > 0;
   const hasTaxCodeErrors = (parsedFile?.taxCodeErrors.length ?? 0) > 0;
-  const canImport = hasRows && !hasTaxCodeErrors;
+  const pendingCount = parsedFile
+    ? parsedFile.rows.filter((row) => {
+        const state = rowStates[row.excelRowNumber];
+        return !state || state.status === "pending";
+      }).length
+    : 0;
+  const failedCount = parsedFile
+    ? parsedFile.rows.filter((row) => rowStates[row.excelRowNumber]?.status === "failed")
+        .length
+    : 0;
+  const successCount = parsedFile
+    ? parsedFile.rows.filter((row) => rowStates[row.excelRowNumber]?.status === "success")
+        .length
+    : 0;
+  const canImport =
+    hasRows &&
+    !hasTaxCodeErrors &&
+    lookupDone &&
+    pendingCount > 0 &&
+    getImportableRows(false).length > 0;
+  const canRetryFailed = lookupDone && getImportableRows(true).length > 0;
+  const busy = isLoading || isLookingUp || isImporting;
+  const lookupErrorCount = Object.keys(lookupErrors).length;
+  const excelOnlyCount = Object.values(buyers).filter((item) => item.source === "excel").length;
 
   return (
     <div className="w-full overflow-x-hidden bg-gray-50 px-3 py-4 sm:px-4">
@@ -142,26 +241,45 @@ export default function ExcelImportTool() {
             <button
               type="button"
               onClick={() => inputRef.current?.click()}
-              className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 sm:text-sm"
+              disabled={busy}
+              className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 sm:text-sm"
             >
               Chọn file
             </button>
             {hasRows && (
-              <button
-                type="button"
-                onClick={() => void handleImport()}
-                disabled={isImporting || !canImport}
-                title={
-                  hasTaxCodeErrors
-                    ? "Sửa lỗi mã số thuế trước khi import"
-                    : undefined
-                }
-                className="rounded-md bg-gray-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-900 disabled:pointer-events-none disabled:opacity-50 sm:ml-auto sm:text-sm"
-              >
-                {isImporting
-                  ? importStatus || "Đang import..."
-                  : `Import (${parsedFile.totalRows})`}
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleImport(false)}
+                  disabled={busy || !canImport}
+                  title={
+                    hasTaxCodeErrors
+                      ? "Sửa lỗi mã số thuế trước khi import"
+                      : !lookupDone
+                        ? "Đang tra cứu, chờ xong rồi import"
+                        : pendingCount === 0
+                          ? "Không còn dòng chờ import"
+                          : undefined
+                  }
+                  className="rounded-md bg-gray-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-900 disabled:pointer-events-none disabled:opacity-50 sm:ml-auto sm:text-sm"
+                >
+                  {isLookingUp
+                    ? status || "Đang tra cứu..."
+                    : isImporting && pendingCount > 0
+                      ? status || "Đang import..."
+                      : `Import (${pendingCount})`}
+                </button>
+                {failedCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => void handleImport(true)}
+                    disabled={busy || !canRetryFailed}
+                    className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:pointer-events-none disabled:opacity-50 sm:text-sm"
+                  >
+                    Import dòng lỗi ({failedCount})
+                  </button>
+                )}
+              </>
             )}
           </div>
 
@@ -172,13 +290,13 @@ export default function ExcelImportTool() {
             }}
             onDragLeave={() => setIsDragging(false)}
             onDrop={onDrop}
-            onClick={() => !parsedFile && inputRef.current?.click()}
+            onClick={() => !parsedFile && !busy && inputRef.current?.click()}
             className={[
               "mt-2 rounded-md border border-dashed px-3 py-3 text-center text-xs sm:text-sm",
               isDragging
                 ? "border-emerald-400 bg-emerald-50"
                 : "border-gray-200 bg-gray-50",
-              parsedFile ? "" : "cursor-pointer hover:border-emerald-300",
+              parsedFile || busy ? "" : "cursor-pointer hover:border-emerald-300",
             ].join(" ")}
           >
             {isLoading ? (
@@ -188,14 +306,30 @@ export default function ExcelImportTool() {
                 <strong className="text-gray-800">{parsedFile.fileName}</strong>
                 {" · "}
                 <span className="text-emerald-600">{parsedFile.totalRows} dòng</span>
+                {lookupDone && (
+                  <>
+                    {" · "}
+                    <span>
+                      Tra cứu {Object.keys(buyers).length} MST
+                      {excelOnlyCount > 0 ? ` · ${excelOnlyCount} lấy từ Excel` : ""}
+                    </span>
+                  </>
+                )}
+                {successCount > 0 && (
+                  <>
+                    {" · "}
+                    <span className="text-emerald-700">{successCount} đã tạo</span>
+                  </>
+                )}
                 {" · "}
                 <button
                   type="button"
+                  disabled={busy}
                   onClick={(e) => {
                     e.stopPropagation();
-                    reset();
+                    resetSession();
                   }}
-                  className="text-gray-400 underline hover:text-gray-600"
+                  className="text-gray-400 underline hover:text-gray-600 disabled:opacity-50"
                 >
                   Đổi file
                 </button>
@@ -213,9 +347,19 @@ export default function ExcelImportTool() {
             </p>
           )}
 
-          {importStatus && (
+          {status && (
             <p className="mt-2 rounded-md bg-blue-50 px-2 py-1.5 text-xs text-blue-700">
-              {importStatus}
+              {status}
+            </p>
+          )}
+
+          {lookupDone && !hasTaxCodeErrors && (
+            <p className="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-xs text-slate-700">
+              Đã tra cứu xong. Kiểm tra tên/địa chỉ bên dưới rồi bấm Import.
+              {Object.values(buyers).some((item) => item.source === "customer") &&
+                ` Danh mục KH: ${Object.values(buyers).filter((item) => item.source === "customer").length}.`}
+              {Object.values(buyers).some((item) => item.source === "taxcode" || item.source === "gdt") &&
+                ` MST/GDT: ${Object.values(buyers).filter((item) => item.source === "taxcode" || item.source === "gdt").length}.`}
             </p>
           )}
 
@@ -234,6 +378,19 @@ export default function ExcelImportTool() {
             </div>
           )}
 
+          {lookupErrorCount > 0 && (
+            <div className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+              <p className="font-medium">{lookupErrorCount} MST tra cứu lỗi (bỏ qua khi import)</p>
+              <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto">
+                {Object.entries(lookupErrors).map(([mst, message]) => (
+                  <li key={mst}>
+                    MST {mst}: {message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {importResult && <ImportResultList result={importResult} />}
         </div>
 
@@ -241,10 +398,18 @@ export default function ExcelImportTool() {
           <section className="mt-3 w-full min-w-0">
             <p className="mb-2 text-xs font-medium text-gray-500">
               Xem trước · {parsedFile.totalRows} dòng
+              {lookupDone
+                ? ` · ${Object.values(buyers)
+                    .map((item) => getBuyerSourceLabel(item.source))
+                    .filter((label, index, all) => all.indexOf(label) === index)
+                    .join(" / ")}`
+                : ""}
             </p>
             <InvoicePreviewTable
               rows={parsedFile.rows}
               invalidExcelRows={new Set(parsedFile.taxCodeErrors.map((e) => e.excelRowNumber))}
+              buyers={buyers}
+              rowStates={rowStates}
             />
           </section>
         )}
